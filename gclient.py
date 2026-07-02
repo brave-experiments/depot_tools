@@ -795,6 +795,14 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                                        should_process=should_process,
                                        relative=use_relative_paths,
                                        condition=condition))
+            elif dep_type == 'aws':
+                # Brave: archives hosted on Brave's own (public) buckets.
+                import aws_support
+                deps_to_add.extend(
+                    aws_support.parse_aws_dep(self, name, dep_value, condition,
+                                              should_process,
+                                              use_relative_paths,
+                                              _should_process))
             elif dep_type == 'gcs':
                 if len(dep_value['objects']) == 0:
                     continue

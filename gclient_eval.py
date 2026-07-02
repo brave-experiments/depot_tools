@@ -200,6 +200,25 @@ _GCLIENT_DEPS_SCHEMA = _NodeDictSchema({
             schema.Optional('dep_type', default='cipd'):
             str,
         }),
+        # AWS content (Brave). Mirrors GCS but unauthenticated; dep_type is
+        # required to disambiguate from gcs.
+        _NodeDictSchema({
+            'bucket':
+            str,
+            'objects': [
+                _NodeDictSchema({
+                    'object_name': str,
+                    'sha256sum': str,
+                    'size_bytes': int,
+                    schema.Optional('output_file'): str,
+                    schema.Optional('condition'): str,
+                })
+            ],
+            schema.Optional('condition'):
+            str,
+            'dep_type':
+            'aws',
+        }),
         # GCS content.
         _NodeDictSchema({
             'bucket':
