@@ -1,0 +1,127 @@
+# Copyright (c) 2026 The Brave Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# CI for the brave-experiments/depot_tools fork.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+  # Allow triggering manually from the Actions tab.
+  workflow_dispatch:
+
+# Cancel superseded runs for the same ref (e.g. force-pushes to a PR branch).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # depot_tools' bootstrap pins CPython 3.11; match it here.
+        # Add macos-latest / windows-latest to widen coverage if needed.
+        os: [ubuntu-latest]
+    env:
+      # Never let the tools self-update mid-run; keep CI hermetic.
+      DEPOT_TOOLS_UPDATE: '0'
+      # GitHub runners default to LANG=C.UTF-8. subprocess2_test.py's
+      # test_get_english_env calls get_english_env({}), which falls through to
+      # the live os.environ and asserts None only when the host locale is
+      # already English. Pin an English locale (a string startswith('en') check,
+      # so the locale need not be installed) to keep it deterministic.
+      LANG: en_US.UTF-8
+      LANGUAGE: en_US.UTF-8
+      # NB: do NOT set DEPOT_TOOLS_METRICS here. metrics_utils computes
+      # COLLECT_METRICS from it at import time, so forcing it off makes
+      # metrics_test.py's collection assertions fail. Running test files never
+      # uploads metrics anyway (only decorated tool entrypoints do).
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure git and PATH
+        shell: bash
+        run: |
+          # Several tests shell out to git and expect an identity + a
+          # deterministic default branch name.
+          git config --global user.name 'depot_tools CI'
+          git config --global user.email 'depot-tools-ci@brave.com'
+          git config --global init.defaultBranch main
+          # Put the checkout (== depot_tools) on PATH so vpython3/cipd resolve.
+          echo "$GITHUB_WORKSPACE" >> "$GITHUB_PATH"
+
+      - name: Bootstrap vpython
+        shell: bash
+        # First vpython3 call downloads the CIPD-pinned CPython 3.11 + wheels
+        # described by .vpython3. Do it once up front so bootstrap failures are
+        # distinct from test failures, and so the cache is warm for the loop.
+        run: vpython3 -c 'import sys; print("vpython3", sys.version)'
+
+      - name: Run Python unit tests
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # Tests that need the full CIPD/recipe/network bootstrap and can't run
+          # in a plain GitHub runner. Add a bare filename here to silence any
+          # upstream test that fails for environment reasons rather than a real
+          # regression in a carried patch.
+          declare -A EXCLUDE=(
+            [cipd_bootstrap_test.py]=1
+          )
+
+          failed=()
+          ran=0
+          # *smoketest.py files are integration tests (network/CIPD) and are
+          # intentionally not part of this suite -- the glob only picks unit
+          # tests, matching PRESUBMIT.py's CheckUnitTestsOnCommit.
+          for t in tests/*_test.py tests/*_unittest.py; do
+            base="$(basename "$t")"
+            case "$base" in
+              *smoketest*) continue ;;
+            esac
+            if [[ -n "${EXCLUDE[$base]:-}" ]]; then
+              echo "::notice::skipping $base (excluded)"
+              continue
+            fi
+            ran=$((ran + 1))
+            echo "::group::$base"
+            # Run through vpython3 so tests get the CIPD-pinned interpreter and
+            # the wheels declared in their (or the default) .vpython3 spec --
+            # matching how depot_tools runs its own tests.
+            if vpython3 "$t"; then
+              echo "PASS: $base"
+            else
+              echo "::error::$base failed"
+              failed+=("$base")
+            fi
+            echo "::endgroup::"
+          done
+
+          {
+            echo "### depot_tools unit tests"
+            echo ""
+            echo "Ran **$ran** test files, **${#failed[@]}** failed."
+            if ((${#failed[@]})); then
+              echo ""
+              echo "Failed:"
+              for f in "${failed[@]}"; do echo "- \`$f\`"; done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if ((${#failed[@]})); then
+            echo "FAILED: ${failed[*]}"
+            exit 1
+          fi
+          echo "All $ran test files passed."
